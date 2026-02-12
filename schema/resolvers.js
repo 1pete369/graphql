@@ -40,7 +40,7 @@ async function callOllama(prompt) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "deepseek-r1:latest",
+      model: "gemma3:1b",
       prompt,
       stream: false,
     }),
@@ -55,6 +55,20 @@ RESOLVERS
 ================================
 */
 
+function extractJSON(text) {
+  // Remove markdown code fences
+  text = text.replace(/```json|```/g, "").trim()
+
+  // Extract JSON object
+  const match = text.match(/\{[\s\S]*\}/)
+
+  if (!match) {
+    throw new Error("No JSON found in AI response")
+  }
+
+  return JSON.parse(match[0])
+}
+
 const resolvers = {
   Query: {
     async getUsers() {
@@ -67,7 +81,7 @@ const resolvers = {
         const ai = await callOllama(finalPrompt)
 
         // Parse AI JSON
-        const parsed = JSON.parse(ai.response)
+        const parsed = extractJSON(ai.response)
 
         // Execute action
         if (parsed.action === "createUser") {
