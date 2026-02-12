@@ -1,3 +1,5 @@
+// D:\test project\graphql\schema\resolvers.js
+
 const User = require("../models/User")
 
 /*
@@ -9,25 +11,26 @@ AI TEMPLATE (JSON OUTPUT ONLY)
 const DB_TEMPLATE = `
 You are a backend assistant.
 
-Convert the user request into JSON.
+Convert the user request into STRICT VALID JSON.
 
-ONLY return valid JSON.
-No text. No explanation.
-
-Format:
+RULES:
+- Return ONLY valid JSON (no markdown, no code fences, no explanation).
+- Use double quotes for all keys and string values.
+- Numbers MUST be valid JSON numbers (NO leading zeros like 01).
+- Return exactly this shape:
 
 {
   "action": "createUser",
   "data": {
-    "id": number,
-    "name": string,
-    "age": number,
-    "gender": string
+    "id": 1,
+    "name": "John",
+    "age": 25,
+    "gender": "male"
   }
 }
 
 User request:
-`
+`.trim()
 
 /*
 ================================
@@ -40,13 +43,85 @@ async function callOllama(prompt) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "gemma3:1b",
+      model: "gemma3:4b",
       prompt,
       stream: false,
+
+      // ✅ This is the key fix: force JSON output mode
+      format: "json",
+
+      // ✅ Less randomness = fewer formatting mistakes
+      options: {
+        temperature: 0,
+      },
     }),
   })
 
+  // If Ollama server is down / wrong port, you'll see it clearly
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(`Ollama HTTP ${res.status}: ${t}`)
+  }
+
   return await res.json()
+}
+
+/*
+================================
+SAFE JSON PARSE + VALIDATION
+================================
+*/
+
+function safeParseJSON(raw) {
+  // raw should already be JSON string because format:"json"
+  // but we still guard in case the model misbehaves.
+  let text = (raw ?? "").toString().trim()
+
+  // Remove accidental code fences if any
+  text = text.replace(/```json|```/g, "").trim()
+
+  // Try direct parse
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    // Fallback: attempt to extract first JSON object
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) {
+      throw new Error("No JSON object found in AI response")
+    }
+
+    // Extra guard: remove leading zeros in numbers like : 01 -> : 1
+    const cleaned = match[0].replace(/:\s*0+(\d+)/g, ": $1")
+
+    return JSON.parse(cleaned)
+  }
+}
+
+function validateAIShape(obj) {
+  if (!obj || typeof obj !== "object")
+    throw new Error("AI output is not an object")
+
+  if (typeof obj.action !== "string") throw new Error("Missing/invalid action")
+
+  if (obj.action !== "createUser") {
+    throw new Error(`Unsupported action: ${obj.action}`)
+  }
+
+  if (!obj.data || typeof obj.data !== "object")
+    throw new Error("Missing data object")
+
+  const { id, name, age, gender } = obj.data
+
+  if (typeof id !== "number" || Number.isNaN(id))
+    throw new Error("Invalid id (must be number)")
+  if (typeof name !== "string" || !name.trim())
+    throw new Error("Invalid name (must be string)")
+  if (typeof age !== "number" || Number.isNaN(age))
+    throw new Error("Invalid age (must be number)")
+  if (typeof gender !== "string" || !gender.trim())
+    throw new Error("Invalid gender (must be string)")
+
+  return { id, name: name.trim(), age, gender: gender.trim() }
 }
 
 /*
@@ -54,20 +129,6 @@ async function callOllama(prompt) {
 RESOLVERS
 ================================
 */
-
-function extractJSON(text) {
-  // Remove markdown code fences
-  text = text.replace(/```json|```/g, "").trim()
-
-  // Extract JSON object
-  const match = text.match(/\{[\s\S]*\}/)
-
-  if (!match) {
-    throw new Error("No JSON found in AI response")
-  }
-
-  return JSON.parse(match[0])
-}
 
 const resolvers = {
   Query: {
@@ -77,29 +138,35 @@ const resolvers = {
 
     async generateText(_, { prompt }) {
       try {
-        const finalPrompt = DB_TEMPLATE + prompt
+        const finalPrompt = `${DB_TEMPLATE}\n${prompt}`
+
         const ai = await callOllama(finalPrompt)
 
-        // Parse AI JSON
-        const parsed = extractJSON(ai.response)
+        // ✅ Ollama generate response body
+        // ai.response is usually the text output
+        const raw = ai?.response
 
-        // Execute action
-        if (parsed.action === "createUser") {
-          const user = new User(parsed.data)
-          await user.save()
+        // Debug (keep this while testing)
+        console.log(
+          "\n===== OLLAMA RAW OUTPUT =====\n",
+          raw,
+          "\n============================\n",
+        )
 
-          return {
-            text: `User created: ${user.name}`,
-            confidence: 1,
-          }
-        }
+        // ✅ Parse + validate
+        const parsed = safeParseJSON(raw)
+        const userData = validateAIShape(parsed)
+
+        // ✅ Execute action
+        const user = new User(userData)
+        await user.save()
 
         return {
-          text: "Unknown action",
-          confidence: 0,
+          text: `User created: ${user.name}`,
+          confidence: 1,
         }
       } catch (err) {
-        console.error(err)
+        console.error("generateText error:", err)
 
         return {
           text: "Execution failed",
