@@ -17,7 +17,7 @@ async function askOllama(prompt) {
 
   try {
     const response = await axios.post("http://localhost:11434/api/generate", {
-      model: "gemma3:1b", // or your preferred model
+      model: "gemma3:4b", // or your preferred model
       prompt: `${systemContext}\nUser Request: "${prompt}"\nResponse:`,
       stream: false,
       format: "json",
